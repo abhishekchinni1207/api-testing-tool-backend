@@ -4,52 +4,63 @@ import axios from "axios";
 import { supabase } from "./supabaseClient.js";
 
 const app = express();
-app.use(cors());
+
+/* ✅ ENV VALIDATION */
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error("❌ Missing Supabase ENV variables");
+}
+
+/* ✅ CORS (Change Your Frontend URL When Deployed) */
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "https://your-frontend.vercel.app"   // << replace after deploy
+  ],
+  credentials: true
+}));
+
 app.use(express.json({ limit: "2mb" }));
-app.get("/health", (req, res) => {
+
+/* ✅ HEALTH CHECK */
+app.get("/health", (_req, res) => {
   res.json({ status: "ok", message: "Backend is running 🚀" });
 });
 
-
-// safety check
+/* ✅ URL SAFETY */
 function isValidUrl(url) {
   try {
     const u = new URL(url);
-    return u.protocol === "http:" || u.protocol === "https:";
+    return ["http:", "https:"].includes(u.protocol);
   } catch {
     return false;
   }
 }
 
-// 🔐 Get user from Authorization: Bearer <token>
+/* ✅ GET USER FROM TOKEN */
 async function getUserFromRequest(req) {
-  const authHeader = req.headers["authorization"] || "";
-  const token = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7)
-    : null;
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
   if (!token) return null;
 
   const { data, error } = await supabase.auth.getUser(token);
-
-  if (error || !data?.user) {
-    console.error("Auth error:", error);
-    return null;
-  }
+  if (error || !data?.user) return null;
+  
   return data.user;
 }
 
-// 🔐 Middleware to require auth
+/* ✅ AUTH MIDDLEWARE */
 async function requireAuth(req, res, next) {
   const user = await getUserFromRequest(req);
-  if (!user) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  if (!user) return res.status(401).json({ error: "Unauthorized" });
+
   req.user = user;
   next();
 }
 
-// 🛰 Proxy endpoint (requires auth)
+/* ========================== */
+/* ✅ PROXY API */
+/* ========================== */
 app.post("/proxy", requireAuth, async (req, res) => {
   const { url, method = "GET", headers = {}, body, params } = req.body;
 
@@ -66,38 +77,39 @@ app.post("/proxy", requireAuth, async (req, res) => {
       headers,
       data: body,
       params,
-      validateStatus: () => true,
       timeout: 20000,
+      maxContentLength: 5 * 1024 * 1024,
+      validateStatus: () => true
     });
 
     const time = Date.now() - start;
 
-    // ✅ SAVE TO SUPABASE with user_id
-    await supabase.from("history").insert([
-      {
-        user_id: req.user.id,
-        url,
-        method,
-        headers,
-        body,
-        response: response.data,
-      },
-    ]);
+    await supabase.from("history").insert([{
+      user_id: req.user.id,
+      url,
+      method,
+      headers,
+      body,
+      response: response.data
+    }]);
 
     res.json({
       status: response.status,
       statusText: response.statusText,
       headers: response.headers,
       body: response.data,
-      time,
+      time
     });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error("Proxy error:", err.message);
+    res.status(500).json({ error: "Proxy failed — check request or target API" });
   }
 });
 
-// 🧾 Get history for current user
+/* ========================== */
+/* ✅ HISTORY */
+/* ========================== */
 app.get("/history", requireAuth, async (req, res) => {
   const { data, error } = await supabase
     .from("history")
@@ -107,29 +119,29 @@ app.get("/history", requireAuth, async (req, res) => {
     .limit(25);
 
   if (error) return res.status(500).json({ error });
-
   res.json(data);
 });
 
-// ❌ Delete a history item
 app.delete("/history/:id", requireAuth, async (req, res) => {
-  const { id } = req.params;
-
   const { error } = await supabase
     .from("history")
     .delete()
-    .eq("id", id)
+    .eq("id", req.params.id)
     .eq("user_id", req.user.id);
 
-  if (error) return res.status(500).json({ error: error.message });
-
+  if (error) return res.status(500).json({ error });
   res.json({ success: true });
 });
 
-
-// 📁 Create collection
+/* ========================== */
+/* ✅ COLLECTIONS */
+/* ========================== */
 app.post("/collections", requireAuth, async (req, res) => {
   const { name } = req.body;
+
+  if (!name?.trim()) {
+    return res.status(400).json({ error: "Collection name required" });
+  }
 
   const { data, error } = await supabase
     .from("collections")
@@ -140,34 +152,6 @@ app.post("/collections", requireAuth, async (req, res) => {
   res.json(data[0]);
 });
 
-// ➕ Add request to collection
-app.post("/collections/:id/items", requireAuth, async (req, res) => {
-  const { id } = req.params;
-  const { request } = req.body;
-
-  console.log("Saving item:", request);
-
-  const { data, error } = await supabase
-    .from("collection_items")
-    .insert([
-      {
-        collection_id: id,
-        user_id: req.user.id,
-        request
-      }
-    ])
-    .select();
-
-  if (error) {
-    console.error("Insert failed:", error);
-    return res.status(500).json({ error: error.message });
-  }
-
-  res.json(data[0]);
-});
-
-
-// 📂 List collections for user
 app.get("/collections", requireAuth, async (req, res) => {
   const { data, error } = await supabase
     .from("collections")
@@ -179,69 +163,67 @@ app.get("/collections", requireAuth, async (req, res) => {
   res.json(data);
 });
 
-// ❌ Delete collection (and its items)
 app.delete("/collections/:id", requireAuth, async (req, res) => {
-  const { id } = req.params;
+  const id = req.params.id;
 
-  // delete items first
-  await supabase
-    .from("collection_items")
-    .delete()
+  await supabase.from("collection_items").delete()
     .eq("collection_id", id)
     .eq("user_id", req.user.id);
 
-  // delete collection
   const { error } = await supabase
     .from("collections")
     .delete()
     .eq("id", id)
     .eq("user_id", req.user.id);
 
-  if (error) return res.status(500).json({ error: error.message });
-
+  if (error) return res.status(500).json({ error });
   res.json({ success: true });
 });
 
-// 📄 List items in a collection (user-scoped)
-app.get("/collections/:id/items", requireAuth, async (req, res) => {
-  const { id } = req.params;
-
-  console.log("Fetching items for collection:", id);
-  console.log("User ID:", req.user.id);
+/* ========================== */
+/* ✅ COLLECTION ITEMS */
+/* ========================== */
+app.post("/collections/:id/items", requireAuth, async (req, res) => {
+  const { request } = req.body;
 
   const { data, error } = await supabase
     .from("collection_items")
+    .insert([{
+      collection_id: req.params.id,
+      user_id: req.user.id,
+      request
+    }])
+    .select();
+
+  if (error) return res.status(500).json({ error });
+  res.json(data[0]);
+});
+
+app.get("/collections/:id/items", requireAuth, async (req, res) => {
+  const { data, error } = await supabase
+    .from("collection_items")
     .select("*")
-    .eq("collection_id", id)
+    .eq("collection_id", req.params.id)
     .eq("user_id", req.user.id);
 
-  if (error) {
-    console.error("Supabase error:", error);
-    return res.status(500).json({ error: error.message });
-  }
-
+  if (error) return res.status(500).json({ error });
   res.json(data || []);
 });
 
-// ❌ Delete a collection item
 app.delete("/collections/items/:id", requireAuth, async (req, res) => {
-  const { id } = req.params;
-
   const { error } = await supabase
     .from("collection_items")
     .delete()
-    .eq("id", id)
+    .eq("id", req.params.id)
     .eq("user_id", req.user.id);
 
-  if (error) return res.status(500).json({ error: error.message });
-
+  if (error) return res.status(500).json({ error });
   res.json({ success: true });
 });
 
-
-
-
-
+/* ========================== */
+/* ✅ ENVIRONMENTS */
+/* ========================== */
 app.post("/env", requireAuth, async (req, res) => {
   const { name, variables } = req.body;
 
@@ -264,8 +246,6 @@ app.get("/env", requireAuth, async (req, res) => {
   res.json(data);
 });
 
-
-
-
-const port = process.env.PORT || 5000;
-app.listen(port, () => console.log("Backend running on port", port));
+/* ✅ START SERVER */
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log("✅ Backend running on port", PORT));
