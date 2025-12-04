@@ -10,19 +10,23 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error("❌ Missing Supabase ENV variables");
 }
 
-/* ✅ CORS (Change Your Frontend URL When Deployed) */
+/* ✅ CORS FIX (EXPRESS v5 SAFE) */
 app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "https://api-testing-tool-five.vercel.app"
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  origin: "https://api-testing-tool-five.vercel.app",
   credentials: true
 }));
 
-app.options("/*", cors());
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "https://api-testing-tool-five.vercel.app");
+  res.header("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+
+  next();
+});
 
 app.use(express.json({ limit: "2mb" }));
 
@@ -48,17 +52,14 @@ async function getUserFromRequest(req) {
 
   if (!token) return null;
 
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data?.user) return null;
-  
-  return data.user;
+  const { data } = await supabase.auth.getUser(token);
+  return data?.user || null;
 }
 
 /* ✅ AUTH MIDDLEWARE */
 async function requireAuth(req, res, next) {
   const user = await getUserFromRequest(req);
   if (!user) return res.status(401).json({ error: "Unauthorized" });
-
   req.user = user;
   next();
 }
@@ -108,7 +109,7 @@ app.post("/proxy", requireAuth, async (req, res) => {
 
   } catch (err) {
     console.error("Proxy error:", err.message);
-    res.status(500).json({ error: "Proxy failed — check request or target API" });
+    res.status(500).json({ error: "Proxy failed" });
   }
 });
 
@@ -143,10 +144,7 @@ app.delete("/history/:id", requireAuth, async (req, res) => {
 /* ========================== */
 app.post("/collections", requireAuth, async (req, res) => {
   const { name } = req.body;
-
-  if (!name?.trim()) {
-    return res.status(400).json({ error: "Collection name required" });
-  }
+  if (!name?.trim()) return res.status(400).json({ error: "Collection name required" });
 
   const { data, error } = await supabase
     .from("collections")
@@ -158,14 +156,13 @@ app.post("/collections", requireAuth, async (req, res) => {
 });
 
 app.get("/collections", requireAuth, async (req, res) => {
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from("collections")
     .select("*")
     .eq("user_id", req.user.id)
     .order("created_at", { ascending: true });
 
-  if (error) return res.status(500).json({ error });
-  res.json(data);
+  res.json(data || []);
 });
 
 app.delete("/collections/:id", requireAuth, async (req, res) => {
@@ -175,13 +172,11 @@ app.delete("/collections/:id", requireAuth, async (req, res) => {
     .eq("collection_id", id)
     .eq("user_id", req.user.id);
 
-  const { error } = await supabase
-    .from("collections")
+  await supabase.from("collections")
     .delete()
     .eq("id", id)
     .eq("user_id", req.user.id);
 
-  if (error) return res.status(500).json({ error });
   res.json({ success: true });
 });
 
@@ -193,11 +188,7 @@ app.post("/collections/:id/items", requireAuth, async (req, res) => {
 
   const { data, error } = await supabase
     .from("collection_items")
-    .insert([{
-      collection_id: req.params.id,
-      user_id: req.user.id,
-      request
-    }])
+    .insert([{ collection_id: req.params.id, user_id: req.user.id, request }])
     .select();
 
   if (error) return res.status(500).json({ error });
@@ -205,24 +196,21 @@ app.post("/collections/:id/items", requireAuth, async (req, res) => {
 });
 
 app.get("/collections/:id/items", requireAuth, async (req, res) => {
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from("collection_items")
     .select("*")
     .eq("collection_id", req.params.id)
     .eq("user_id", req.user.id);
 
-  if (error) return res.status(500).json({ error });
   res.json(data || []);
 });
 
 app.delete("/collections/items/:id", requireAuth, async (req, res) => {
-  const { error } = await supabase
-    .from("collection_items")
+  await supabase.from("collection_items")
     .delete()
     .eq("id", req.params.id)
     .eq("user_id", req.user.id);
 
-  if (error) return res.status(500).json({ error });
   res.json({ success: true });
 });
 
@@ -242,13 +230,12 @@ app.post("/env", requireAuth, async (req, res) => {
 });
 
 app.get("/env", requireAuth, async (req, res) => {
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from("environments")
     .select("*")
     .eq("user_id", req.user.id);
 
-  if (error) return res.status(500).json({ error });
-  res.json(data);
+  res.json(data || []);
 });
 
 /* ✅ START SERVER */
