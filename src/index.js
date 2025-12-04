@@ -6,6 +6,10 @@ import { supabase } from "./supabaseClient.js";
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", message: "Backend is running 🚀" });
+});
+
 
 // safety check
 function isValidUrl(url) {
